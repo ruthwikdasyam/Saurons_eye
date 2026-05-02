@@ -24,6 +24,7 @@ def main() -> None:
         )
 
     print(f"Found {len(devices)} RealSense device(s):")
+    usb = "?"
     for d in devices:
         usb = (
             d.get_info(rs.camera_info.usb_type_descriptor)
@@ -37,18 +38,27 @@ def main() -> None:
             f"  USB {usb}"
         )
 
+    # D435i can't carry dual 640x480@30 over USB 2.x — drop to 6 fps if needed.
+    usb2 = usb.startswith("2.")
+    fps = 6 if usb2 else 30
+    if usb2:
+        print(
+            "WARNING: device is on USB 2.x. Falling back to 6 fps for both streams.\n"
+            "         Use a USB 3.x (SuperSpeed / blue) port for full 30 fps."
+        )
+
     pipeline = rs.pipeline()
     config = rs.config()
-    config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
-    config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
+    config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, fps)
+    config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, fps)
 
     profile = pipeline.start(config)
     depth_scale = profile.get_device().first_depth_sensor().get_depth_scale()
     print(f"Depth scale: {depth_scale} m/unit  (multiply raw uint16 by this for metres)")
 
-    # Warm-up: D435i auto-exposure ramps over the first ~30 frames.
-    print("Warming up...", end=" ", flush=True)
-    for _ in range(30):
+    warmup = 6 if usb2 else 30
+    print(f"Warming up ({warmup} frames @ {fps} fps)...", end=" ", flush=True)
+    for _ in range(warmup):
         pipeline.try_wait_for_frames(timeout_ms=10000)
     print("ready. Press 'q' or Esc in the window to quit.")
 

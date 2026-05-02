@@ -14,6 +14,8 @@ Problem Statements addressed: **PS2 (Edge / Drones)** primary, **PS3 (C2)** and 
 
 Running log of decisions, scope changes, and notes since kickoff. Newest first.
 
+- **2026-05-02** — Capture pipeline diagnostic stack working. Five scripts under `capture/` build up from device check → per-frame cloud → cleaned voxelised cloud → stationary TSDF → TSDF + RGB-D odometry. The working "clean voxels" baseline is [pointcloud_clean_check.py](capture/pointcloud_clean_check.py): RealSense filters → Open3D cloud → 5 cm voxel downsample → statistical outlier removal → uniform-sphere display in Rerun, ~10 Hz, no colour. [tsdf_odom_check.py](capture/tsdf_odom_check.py) layers RGB-D odometry + TSDF fusion at 5 cm / 6 m on top; works at ~5–8 Hz with `PROCESS_EVERY=2` frame skip. Next: build a coherent global voxel map (figure out whether to lean on IMU / constant-velocity / MAVLink-style pose source).
+- **2026-05-02** — Capture pipeline cooking. Step 1 ([pointcloud_check.py](capture/pointcloud_check.py)) streams per-frame Open3D clouds → Rerun. Step 3 stationary ([tsdf_check.py](capture/tsdf_check.py)) fuses RGB-D into a 2 cm TSDF with identity pose; ~7 K points stable from a single viewpoint. Spatial + temporal + hole-fill filters on raw depth before alignment. Next: RGB-D odometry to lift the stationary-camera assumption.
 - **2026-05-02** — Repo skeleton + specs in place ([protocol.md](shared/protocol.md), [frames.md](shared/frames.md)). `capture/`, `headset/`, `demo/`, `scripts/` are empty stubs; build starts from here.
 
 ---
