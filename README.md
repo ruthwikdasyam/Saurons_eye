@@ -1,4 +1,4 @@
-# ghostsight
+# Sauron's Eye
 
 **See through walls. Real sensors, real soldiers, real time.**
 
@@ -10,11 +10,46 @@ Problem Statements addressed: **PS2 (Edge / Drones)** primary, **PS3 (C2)** and 
 
 ---
 
+## Quick Start
+
+Tested on Ubuntu 22.04 / Python 3.10+. macOS works for everything except Quest deployment.
+
+```bash
+git clone https://github.com/ruthwikdasyam/Saurons_eye.git
+cd Saurons_eye
+
+# Create + activate venv
+python3 -m venv .venv
+source .venv/bin/activate
+
+# Install dependencies
+pip install -r requirements.txt
+```
+
+Run the capture side (laptop tethered to RealSense):
+
+```bash
+cd capture
+python server.py        # WebSocket on :8765 + Rerun viewer
+```
+
+Run the headset side (Quest browser):
+
+```bash
+cd headset
+python -m http.server 8000
+# On Quest: open browser → http://<laptop-ip>:8000
+```
+
+See [Setup](#setup) further down for the full breakdown, and [Build Plan](#build-plan-24-hours) for the 24-hour workstream split.
+
+---
+
 ## The Problem
 
 Room clearing is the deadliest task in modern infantry combat. The "fatal funnel" — the doorway — kills soldiers because the defender knows where the attacker has to be, and the attacker doesn't know what's inside. The Army has spent over $20B on soldier-worn AR (IVAS) and bought tens of thousands of pocket drones (Black Hornet) trying to solve this. Nobody has cleanly fused the two into pre-entry X-ray vision.
 
-WALLHACK does.
+Sauron's Eye does.
 
 ## The Concept
 
@@ -117,7 +152,7 @@ We are deliberately **not** using a simulator. All sensor data is real.
 ## Repository Layout
 
 ```
-wallhack/
+Saurons_eye/
 ├── README.md                  ← you are here
 ├── capture/                   ← runs on laptop tethered to RealSense
 │   ├── realsense_stream.py    ← librealsense → frames
@@ -163,7 +198,7 @@ Tested on Ubuntu 22.04 + Python 3.10. macOS works for everything except Quest de
 
 ```bash
 git clone <repo>
-cd wallhack
+cd Saurons_eye
 ./scripts/setup.sh      # installs librealsense, open3d, ultralytics, rerun, ws server deps
 ```
 
@@ -191,7 +226,7 @@ python -m http.server 8000   # serve the page
 
 ## Pitch Opener
 
-> Every gamer knows what a wallhack is. We built one. For real. For soldiers. In 24 hours.
+> In Tolkien, the Eye of Sauron saw everything, everywhere. We built one. For real. For soldiers. In 24 hours.
 
 ## License
 

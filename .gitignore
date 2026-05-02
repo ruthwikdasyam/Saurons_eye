@@ -27,3 +27,7 @@ recordings/
 data/
 runs/
 logs/
+
+
+#claude
+.claude/
