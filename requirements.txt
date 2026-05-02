@@ -1,0 +1,21 @@
+# RealSense capture
+pyrealsense2>=2.55.1
+
+# SLAM / fusion / point clouds
+open3d>=0.18.0
+
+# Object detection (pulls in torch)
+ultralytics>=8.3.0
+
+# General CV + ArUco markers
+opencv-contrib-python>=4.10.0
+
+# Numerics
+numpy>=1.26,<2.0
+
+# Wire format
+websockets>=13.0
+msgpack>=1.1.0
+
+# Visualizer
+rerun-sdk>=0.20.0
