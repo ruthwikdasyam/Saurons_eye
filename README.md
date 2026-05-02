@@ -1,4 +1,4 @@
-# Sauron's Eye
+# WALLHACK
 
 **See through walls. Real sensors, real soldiers, real time.**
 
@@ -7,6 +7,58 @@ A multi-agent reconnaissance system that gives a dismounted soldier "X-ray visio
 Built for the National Security Hackathon (Army xTech), May 2–3 2026, San Francisco.
 
 Problem Statements addressed: **PS2 (Edge / Drones)** primary, **PS3 (C2)** and **PS1 (Sensor Fusion)** secondary.
+
+---
+
+## Updates
+
+Running log of decisions, scope changes, and notes since kickoff. Newest first.
+
+- **2026-05-02** — Repo skeleton + specs in place ([protocol.md](shared/protocol.md), [frames.md](shared/frames.md)). `capture/`, `headset/`, `demo/`, `scripts/` are empty stubs; build starts from here.
+
+---
+
+## Ideas / Post-v1
+
+Captured here so they don't get lost during the 24-hour sprint. **None of these are in v1 scope** — they get attempted only after the H14 integration checkpoint passes and there is real slack.
+
+### Agentic layer (high priority post-v1)
+
+Wrap the capture pipeline in an agent loop that accepts natural-language commands from the soldier and steers what gets surfaced in the headset. Voice in, world-model queries out.
+
+Example commands the agent should handle:
+- "Show me the next person." — cycle highlight to the next tracked `person` detection.
+- "Focus on the weapon on the table." — re-rank detections, pin highlight on the matching object.
+- "Ignore the chair." — class/instance suppression for the rest of the engagement.
+- "How many people in the room?" — query the current world model, speak/display the answer.
+- "Mark this as cleared." — annotate a region of the point cloud as friendly-checked.
+
+Sketch of where it sits:
+
+```
+voice (Quest mic) ──► STT ──► agent (tool-using LLM) ──► tools:
+                                                        ├─ query_detections()
+                                                        ├─ set_highlight(id)
+                                                        ├─ suppress_class(name)
+                                                        ├─ annotate_region(bbox, label)
+                                                        └─ describe_scene()
+                                                              │
+                                                              ▼
+                                                       TTS / overlay update
+```
+
+Open questions to resolve before building:
+- Where does the agent run — laptop (latency: STT round-trip over Wi-Fi) or Quest (limited compute)? Probably laptop, with Quest just shipping audio frames.
+- Tool surface: extend the wire protocol with a client→server channel (currently v1 is server-push only). Likely needs a `commands` message type and a bump to `saurons-eye/2`.
+- Model choice: Claude Haiku for tool-calling latency, escalate to Sonnet for scene-description queries.
+
+### Other ideas
+
+- **Real drone integration.** Swap the hand-carried RealSense for an actual pocket drone (Black Hornet / Skydio class). Requires solving the airframe pose → world frame handoff cleanly.
+- **Multi-drone fusion.** Two drones, two capture laptops, one merged world model. Protocol already reserves `frame: "world"` for this.
+- **Edge inference on the drone.** Move YOLO + Open3D off the laptop onto the drone's compute (Jetson Orin Nano class) so the link only carries deltas.
+- **Threat classification beyond COCO.** Fine-tune a detector on weapons, IEDs, tripwires — the classes that actually matter for room clearing.
+- **Persistent world model across engagements.** Save the reconstructed building between rooms; the soldier walks back in tomorrow and the map is already there.
 
 ---
 
