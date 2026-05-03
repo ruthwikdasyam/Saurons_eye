@@ -46,6 +46,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--json", dest="json_path", default=None, help="append per-frame records here")
     p.add_argument("--headless", action="store_true")
     p.add_argument("--max-frames", type=int, default=0)
+    p.add_argument(
+        "--blur-others",
+        action="store_true",
+        help="blur everything outside the detected bbox(es); when no match, blur the whole frame",
+    )
     return p.parse_args()
 
 
@@ -160,9 +165,28 @@ def emit_frame(
     return record
 
 
-def draw(rgb: np.ndarray, query: str, pairs) -> np.ndarray:
+def draw(rgb: np.ndarray, query: str, pairs, blur_others: bool = False) -> np.ndarray:
     import cv2
     img = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+
+    if blur_others:
+        # Blur the whole frame, then alpha-composite the bbox regions of the
+        # sharp original back over the blur using a feathered mask. Drawing
+        # rectangles happens *after* so they don't get blurred too.
+        blurred = cv2.GaussianBlur(img, (51, 51), 30)
+        mask = np.zeros(img.shape[:2], dtype=np.uint8)
+        for _, (x1, y1, x2, y2) in pairs:
+            cv2.rectangle(
+                mask,
+                (max(0, int(x1)), max(0, int(y1))),
+                (int(x2), int(y2)),
+                255, -1,
+            )
+        # Feather so the cutout doesn't look like a hard rectangle.
+        mask = cv2.GaussianBlur(mask, (21, 21), 10)
+        m = (mask.astype(np.float32) / 255.0)[..., None]
+        img = (img.astype(np.float32) * m + blurred.astype(np.float32) * (1.0 - m)).astype(np.uint8)
+
     for rank, (conf, (x1, y1, x2, y2)) in enumerate(pairs, start=1):
         x1i, y1i, x2i, y2i = (int(v) for v in (x1, y1, x2, y2))
         cx, cy = int((x1 + x2) / 2), int((y1 + y2) / 2)
@@ -191,7 +215,7 @@ def run_video(model, query: str, source, args, json_records):
             pairs = boxes_from_result(results[0]) if results else []
             emit_frame(n, query, pairs, None, json_records)
             if not args.headless:
-                cv2.imshow(f"track: {query}", draw(rgb, query, pairs))
+                cv2.imshow(f"track: {query}", draw(rgb, query, pairs, blur_others=args.blur_others))
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break
             n += 1
@@ -213,7 +237,7 @@ def run_image(model, query: str, path: str, args, json_records):
     pairs = boxes_from_result(results[0]) if results else []
     emit_frame(0, query, pairs, None, json_records)
     if not args.headless:
-        cv2.imshow(f"track: {query}", draw(rgb, query, pairs))
+        cv2.imshow(f"track: {query}", draw(rgb, query, pairs, blur_others=args.blur_others))
         cv2.waitKey(0)
         cv2.destroyAllWindows()
 
@@ -250,7 +274,7 @@ def run_realsense(model, query: str, args, json_records):
             pairs = boxes_from_result(results[0]) if results else []
             emit_frame(n, query, pairs, (depth_raw, K, depth_scale), json_records)
             if not args.headless:
-                cv2.imshow(f"track: {query}", draw(rgb, query, pairs))
+                cv2.imshow(f"track: {query}", draw(rgb, query, pairs, blur_others=args.blur_others))
                 if cv2.waitKey(1) & 0xFF == ord("q"):
                     break
             n += 1
