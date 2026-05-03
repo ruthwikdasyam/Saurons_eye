@@ -80,6 +80,11 @@ SOR_STD_RATIO = 2.0
 PROCESS_EVERY = 1
 STATS_EVERY = 15           # print stats every N processed frames
 
+# Recording
+SAVE_DIR = "recordings"
+SAVE_ON_EXIT = True        # write final cloud as .ply when the script stops
+SAVE_EVERY_SEC = 0.0       # >0 to also write periodic snapshots; 0 disables
+
 LOG_PATH = "logs/capture_run_rtabmap.log"
 
 
@@ -96,6 +101,18 @@ def _setup_logging() -> logging.Logger:
         force=True,
     )
     return logging.getLogger("saurons-eye-rtabmap")
+
+
+def _save_cloud_ply(xyz: np.ndarray, path: str, log: logging.Logger) -> None:
+    """Write an (N, 3) numpy cloud as a .ply file. No colour."""
+    if xyz.shape[0] == 0:
+        log.info(f"skip save — cloud is empty ({path})")
+        return
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(xyz.astype(np.float64))
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    o3d.io.write_point_cloud(path, pcd)
+    log.info(f"saved {xyz.shape[0]:,} points → {path}")
 
 
 def _depth_to_world_pcd(
@@ -141,6 +158,7 @@ def main() -> None:
         raw_idx = 0
         proc_idx = 0
         last_log = time.perf_counter()
+        last_snapshot = time.time()
         t_io = t_pose = t_project = t_integ = 0.0
 
         try:
@@ -202,10 +220,27 @@ def main() -> None:
                     )
                     t_io = t_pose = t_project = t_integ = 0.0
 
+                # Periodic snapshot (optional).
+                if SAVE_EVERY_SEC > 0 and time.time() - last_snapshot >= SAVE_EVERY_SEC:
+                    ts = time.strftime("%Y%m%d_%H%M%S")
+                    _save_cloud_ply(
+                        mapper.get_voxel_centers(),
+                        os.path.join(SAVE_DIR, f"snapshot_{ts}.ply"),
+                        log,
+                    )
+                    last_snapshot = time.time()
+
                 t_iter = time.perf_counter()
         except KeyboardInterrupt:
             log.info("interrupted by user")
         finally:
+            if SAVE_ON_EXIT:
+                ts = time.strftime("%Y%m%d_%H%M%S")
+                _save_cloud_ply(
+                    mapper.get_voxel_centers(),
+                    os.path.join(SAVE_DIR, f"final_{ts}.ply"),
+                    log,
+                )
             if hasattr(mapper, "dispose"):
                 mapper.dispose()
             elif hasattr(mapper, "shutdown"):
