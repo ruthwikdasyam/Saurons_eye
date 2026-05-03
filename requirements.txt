@@ -18,4 +18,11 @@ websockets>=13.0
 msgpack>=1.1.0
 
 # Visualizer
-rerun-sdk>=0.20.0
+rerun-sdk==0.23.1
+
+# Colormap LUTs (turbo, viridis, plasma) for height-coloured voxel viz.
+# Matplotlib is already pulled in by Open3D, but we depend on it directly.
+matplotlib>=3.5
+
+# Tests
+pytest>=8.0

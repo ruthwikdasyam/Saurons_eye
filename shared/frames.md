@@ -79,7 +79,7 @@ Apply once when the marker is first observed; cache.
 
 - Open3D RGB-D odometry: budget **2 cm / minute** of translation drift, **1° / minute** of rotation. Re-anchoring every 30 frames against the marker keeps cumulative error well below this.
 - Quest Insight tracking: Meta's published spec is sub-centimetre over a typical room. We treat it as ground-truth and never re-anchor in v1.
-- **Demo guardrail:** keep total capture-to-projection time < 60 seconds. Beyond that, drift becomes visible at the 1–2 m overlay distance.
+- **Drift compounds with session length.** With Open3D's frame-to-frame RGB-D odometry and no re-anchoring, expect visible drift at 1–2 m overlay distance after roughly a minute of continuous motion. Mitigations: ArUco re-anchoring (planned), or replacing the L source with RTAB-Map / MAVLink (see README → Roadmap).
 
 ---
 
