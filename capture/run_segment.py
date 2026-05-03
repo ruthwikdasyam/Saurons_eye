@@ -41,6 +41,7 @@ from capture.person_wireframe import (
     camera_optical_to_local,
     load_transform,
     mask_to_silhouettes_3d,
+    point_cloud_to_payload,
     silhouettes_to_polylines,
 )
 
@@ -86,13 +87,16 @@ def parse_args() -> argparse.Namespace:
 
 
 def _post_scene_async(url: str, *, cubes: list[dict] | None = None,
-                      polylines: list[dict] | None = None) -> None:
+                      polylines: list[dict] | None = None,
+                      point_clouds: list[dict] | None = None) -> None:
     """Fire-and-forget POST in a daemon thread so the capture loop never blocks."""
     body: dict = {}
     if cubes:
         body["cubes"] = cubes
     if polylines:
         body["polylines"] = polylines
+    if point_clouds:
+        body["point_clouds"] = point_clouds
     payload = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
         url,
@@ -292,15 +296,24 @@ def main() -> None:
             else:
                 T_this_frame = T_world_camera
 
-            # Push to headset (throttled).
+            # Push to headset (throttled). Polylines = flat outline (clean
+            # boundary cue, no fan-fill artifacts). Point cloud = real per-pixel
+            # depth, gives the silhouette actual 3D shape from any viewing angle.
             now = time.time()
-            if (args.vr and silhouettes and T_this_frame is not None
+            if (args.vr and T_this_frame is not None
                     and (now - last_push_t) >= (1.0 / VR_PUSH_HZ)):
                 polylines = silhouettes_to_polylines(
-                    silhouettes, T_this_frame, frame=polyline_frame,
-                )
-                _post_scene_async(push_url, polylines=polylines)
-                last_push_t = now
+                    silhouettes, T_this_frame,
+                    frame=polyline_frame,               # default fill_color → renderer earcut-fills
+                ) if silhouettes else []
+                point_clouds = point_cloud_to_payload(
+                    pts_vox, T_this_frame, frame=polyline_frame,
+                ) if n_pts > 0 else []
+                if polylines or point_clouds:
+                    _post_scene_async(
+                        push_url, polylines=polylines, point_clouds=point_clouds,
+                    )
+                    last_push_t = now
 
             hud = (
                 f"seg={t_seg:5.1f}ms proj={t_proj:5.1f}ms sil={t_sil:4.1f}ms cap={t_capture:4.1f}ms  "

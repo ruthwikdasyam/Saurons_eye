@@ -88,6 +88,74 @@
       return frame === 'camera' ? headRoot : worldRoot;
     }
 
+    // Triangulate a coplanar 3D polygon into a clean mesh.
+    //   1. centroid
+    //   2. v1 = first edge from centroid (normalised)
+    //   3. v2 = some other edge that isn't collinear with v1
+    //   4. plane normal = v1 × v2; orthonormalise v2 = normal × v1
+    //   5. project each polygon vertex to (u, v) in this basis
+    //   6. THREE.ShapeGeometry triangulates the 2D polygon (earcut)
+    //   7. lift each output vertex back: P = centroid + u·v1 + v·v2
+    function planarFillMesh(pts, colorInt, opacity = 0.5) {
+      if (pts.length < 3) return null;
+      let cx = 0, cy = 0, cz = 0;
+      for (const p of pts) { cx += p[0]; cy += p[1]; cz += p[2]; }
+      cx /= pts.length; cy /= pts.length; cz /= pts.length;
+
+      const v1 = new THREE.Vector3(pts[0][0]-cx, pts[0][1]-cy, pts[0][2]-cz);
+      if (v1.length() < 1e-6) return null;
+      v1.normalize();
+
+      let v2tmp = null;
+      for (let i = 1; i < pts.length; i++) {
+        const cand = new THREE.Vector3(pts[i][0]-cx, pts[i][1]-cy, pts[i][2]-cz);
+        if (cand.length() < 1e-6) continue;
+        // accept if not nearly parallel to v1
+        if (Math.abs(cand.dot(v1)) < 0.99 * cand.length()) {
+          v2tmp = cand;
+          break;
+        }
+      }
+      if (!v2tmp) return null;
+
+      const normal = new THREE.Vector3().crossVectors(v1, v2tmp).normalize();
+      const v2 = new THREE.Vector3().crossVectors(normal, v1).normalize();
+
+      const shape = new THREE.Shape();
+      for (let i = 0; i < pts.length; i++) {
+        const d = new THREE.Vector3(pts[i][0]-cx, pts[i][1]-cy, pts[i][2]-cz);
+        const u = d.dot(v1);
+        const v = d.dot(v2);
+        if (i === 0) shape.moveTo(u, v);
+        else shape.lineTo(u, v);
+      }
+      shape.closePath();
+
+      const geom = new THREE.ShapeGeometry(shape);
+      const positions = geom.attributes.position;
+      for (let i = 0; i < positions.count; i++) {
+        const u = positions.getX(i);
+        const v = positions.getY(i);
+        positions.setXYZ(
+          i,
+          cx + u * v1.x + v * v2.x,
+          cy + u * v1.y + v * v2.y,
+          cz + u * v1.z + v * v2.z,
+        );
+      }
+      positions.needsUpdate = true;
+      geom.computeBoundingSphere();
+
+      const mat = new THREE.MeshBasicMaterial({
+        color: colorInt,
+        transparent: true,
+        opacity: opacity,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      });
+      return new THREE.Mesh(geom, mat);
+    }
+
     function applyScene(msg) {
       if (msg?.type !== 'scene') return;
       clearScene();
@@ -112,6 +180,27 @@
         rootFor(c.frame).add(lines);
       }
 
+      const pointClouds = msg.point_clouds || [];
+      for (const pc of pointClouds) {
+        const pts = pc.points || [];
+        if (pts.length === 0) continue;
+        const flat = new Float32Array(pts.length * 3);
+        for (let i = 0; i < pts.length; i++) {
+          flat[3*i] = pts[i][0]; flat[3*i+1] = pts[i][1]; flat[3*i+2] = pts[i][2];
+        }
+        const geom = new THREE.BufferGeometry();
+        geom.setAttribute('position', new THREE.BufferAttribute(flat, 3));
+        const mat = new THREE.PointsMaterial({
+          color: pc.color ?? 0x00ff88,
+          size: pc.size ?? 0.04,
+          sizeAttenuation: true,
+          transparent: true,
+          opacity: 0.9,
+          depthWrite: false,
+        });
+        rootFor(pc.frame).add(new THREE.Points(geom, mat));
+      }
+
       const polylines = msg.polylines || [];
       for (const pl of polylines) {
         const pts = pl.points || [];
@@ -129,35 +218,17 @@
                                   : new THREE.Line(geom, lineMat);
         rootFor(pl.frame).add(lineObj);
 
-        // Fill: triangle fan from centroid. Approximate but cheap; non-convex
-        // silhouettes (arms out, gap between legs) will over-fill across gaps.
+        // Fill: project the (coplanar) 3D polygon to its plane, triangulate
+        // via THREE.ShapeGeometry (earcut under the hood — handles concave),
+        // then lift the resulting vertices back into 3D. No visible seams.
         if (pl.fill_color != null && pts.length >= 3) {
-          let cx = 0, cy = 0, cz = 0;
-          for (const p of pts) { cx += p[0]; cy += p[1]; cz += p[2]; }
-          cx /= pts.length; cy /= pts.length; cz /= pts.length;
-
-          const tri = new Float32Array(pts.length * 9);
-          for (let i = 0; i < pts.length; i++) {
-            const j = (i + 1) % pts.length;
-            const o = i * 9;
-            tri[o] = cx;       tri[o+1] = cy;       tri[o+2] = cz;
-            tri[o+3] = pts[i][0]; tri[o+4] = pts[i][1]; tri[o+5] = pts[i][2];
-            tri[o+6] = pts[j][0]; tri[o+7] = pts[j][1]; tri[o+8] = pts[j][2];
-          }
-          const fillGeom = new THREE.BufferGeometry();
-          fillGeom.setAttribute('position', new THREE.BufferAttribute(tri, 3));
-          const fillMat = new THREE.MeshBasicMaterial({
-            color: pl.fill_color,
-            transparent: true,
-            opacity: 0.55,                  // bumped from 0.25 — needed against AR passthrough
-            side: THREE.DoubleSide,
-            depthWrite: false,
-          });
-          rootFor(pl.frame).add(new THREE.Mesh(fillGeom, fillMat));
+          const mesh = planarFillMesh(pts, pl.fill_color);
+          if (mesh) rootFor(pl.frame).add(mesh);
         }
       }
 
-      countEl.textContent = `${cubes.length} cubes / ${polylines.length} silhouettes`;
+      const ptsTotal = pointClouds.reduce((acc, pc) => acc + (pc.points?.length || 0), 0);
+      countEl.textContent = `${cubes.length} cubes / ${polylines.length} silhouettes / ${ptsTotal} pts`;
     }
 
     let ws = null;

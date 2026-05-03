@@ -45,6 +45,20 @@ class Polyline:
     frame: str = "world"
 
 
+@dataclass(frozen=True)
+class PointCloud:
+    """N points in 3D, rendered as billboarded discs (THREE.Points + PointsMaterial).
+
+    Use for the body of a segmented object — each point lands at its real
+    captured depth, so the cloud has actual 3D shape (front-facing only,
+    since one camera can't see the back). ``size`` is in metres.
+    """
+    points: list[tuple[float, float, float]]
+    color: int = 0x00FF88
+    size: float = 0.04                       # billboard disc diameter, metres
+    frame: str = "world"
+
+
 def _random_quat(rng: random.Random) -> tuple[float, float, float, float]:
     # Shoemake — uniform unit-quaternion sampling.
     u1, u2, u3 = rng.random(), rng.random(), rng.random()
@@ -86,11 +100,13 @@ def random_cubes(
 def to_message(
     cubes: list[Cube] | None = None,
     polylines: list[Polyline] | None = None,
+    point_clouds: list[PointCloud] | None = None,
 ) -> dict[str, Any]:
     return {
         "type": "scene",
         "cubes": [asdict(c) for c in (cubes or [])],
         "polylines": [asdict(p) for p in (polylines or [])],
+        "point_clouds": [asdict(pc) for pc in (point_clouds or [])],
     }
 
 

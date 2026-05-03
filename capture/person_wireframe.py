@@ -73,13 +73,21 @@ def mask_to_silhouettes_3d(
     K: np.ndarray,
     max_points: int = SIL_MAX_POINTS,
 ) -> list[np.ndarray]:
-    """Per connected mask region, extract its silhouette as a 3D polyline.
+    """Per connected mask region, extract its silhouette as a flat 3D polyline.
 
     Steps:
       1. cv2.findContours on the binary mask → 2D outline pixels.
-      2. Decimate to ``max_points`` (uniform along the perimeter).
-      3. Look up depth at each contour pixel; back-project (u,v,z) → (X,Y,Z).
-      4. Drop contour points whose depth is invalid (out of range or NaN).
+      2. cv2.approxPolyDP smoothing — drops the pixel-staircase zigzag.
+      3. Decimate to ``max_points`` (uniform along the perimeter).
+      4. Compute the per-contour median depth from masked depth pixels
+         (robust to depth holes at the edges) and back-project ALL
+         contour points at that single depth.
+
+    The single-depth flattening is deliberate: it makes the silhouette a
+    flat billboard polygon, which removes the visible fan-triangulation
+    seams the renderer otherwise shows when the fill triangles span
+    different depths. Cost: lose curvature along the silhouette (a hand
+    poking forward gets snapped to the body's depth).
 
     Returns one [N,3] float32 array per mask region (camera frame).
     """
@@ -96,21 +104,61 @@ def mask_to_silhouettes_3d(
     for c in contours:
         if cv2.contourArea(c) < SIL_MIN_CONTOUR_AREA:
             continue
-        c2 = c[:, 0, :]                                           # [N, 2] (x, y) pixels
+
+        # Per-contour median depth: handles multi-person scenes correctly
+        # (each silhouette gets its own distance).
+        region = np.zeros_like(mask_u8)
+        cv2.drawContours(region, [c], -1, 255, -1)
+        valid_depth = depth_m[(region > 0)
+                              & (depth_m >= SIL_DEPTH_MIN)
+                              & (depth_m <= SIL_DEPTH_MAX)
+                              & np.isfinite(depth_m)]
+        if valid_depth.size < 8:
+            continue
+        z_flat = float(np.median(valid_depth))
+
+        # Smooth + decimate.
+        epsilon = 0.005 * cv2.arcLength(c, True)              # ~0.5% perimeter
+        c_smooth = cv2.approxPolyDP(c, epsilon, True)
+        c2 = c_smooth[:, 0, :]                                # [N, 2] (x, y) pixels
+        if len(c2) < 3:
+            continue
         if len(c2) > max_points:
             idx = np.linspace(0, len(c2) - 1, max_points).round().astype(int)
             c2 = c2[idx]
+
         us = np.clip(c2[:, 0].astype(np.int32), 0, w - 1)
         vs = np.clip(c2[:, 1].astype(np.int32), 0, h - 1)
-        z = depth_m[vs, us]
-        valid = (z >= SIL_DEPTH_MIN) & (z <= SIL_DEPTH_MAX) & np.isfinite(z)
-        if valid.sum() < 8:                                       # too gappy to be useful
-            continue
-        us, vs, z = us[valid], vs[valid], z[valid]
+        z = np.full(len(us), z_flat, dtype=np.float32)
         x = (us - cx) * z / fx
         y = (vs - cy) * z / fy
         out.append(np.stack([x, y, z], axis=-1).astype(np.float32))
     return out
+
+
+def point_cloud_to_payload(
+    pts_camera: np.ndarray,
+    T_world_camera: np.ndarray,
+    color: int = SILHOUETTE_COLOR,
+    size: float = 0.04,
+    frame: str = "world",
+) -> list[dict]:
+    """Transform a [N,3] camera-frame point cloud and emit one PointCloud payload.
+
+    Use for the body of a segmented object (per-pixel depth retained → real
+    3D shape). Pair with a flat polyline outline for a clean boundary.
+    """
+    if pts_camera is None or len(pts_camera) == 0:
+        return []
+    R = T_world_camera[:3, :3]
+    t = T_world_camera[:3, 3]
+    pts_w = (R @ pts_camera.astype(np.float64).T).T + t
+    return [{
+        "points": pts_w.tolist(),
+        "color": int(color),
+        "size": float(size),
+        "frame": frame,
+    }]
 
 
 def silhouettes_to_polylines(

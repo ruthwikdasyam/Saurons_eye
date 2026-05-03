@@ -32,7 +32,7 @@ from pathlib import Path
 
 from aiohttp import WSMsgType, web
 
-from headset.scene import Cube, Polyline, cubes_from_ply, random_cubes, to_message
+from headset.scene import Cube, PointCloud, Polyline, cubes_from_ply, random_cubes, to_message
 
 logger = logging.getLogger("headset.server")
 
@@ -119,9 +119,10 @@ class Hub:
         self,
         cubes: list[Cube] | None = None,
         polylines: list[Polyline] | None = None,
+        point_clouds: list[PointCloud] | None = None,
     ) -> int:
         """Replace the current scene from an external publisher and broadcast."""
-        scene = to_message(cubes=cubes, polylines=polylines)
+        scene = to_message(cubes=cubes, polylines=polylines, point_clouds=point_clouds)
         return await self._broadcast(scene)
 
     async def _broadcast(self, scene: dict) -> int:
@@ -177,6 +178,7 @@ async def post_scene(request: web.Request) -> web.Response:
     payload = await request.json()
     raw_cubes = payload.get("cubes") or []
     raw_lines = payload.get("polylines") or []
+    raw_clouds = payload.get("point_clouds") or []
     cubes = [
         Cube(
             center=tuple(c["center"]),
@@ -197,10 +199,22 @@ async def post_scene(request: web.Request) -> web.Response:
         )
         for pl in raw_lines
     ]
-    sent = await request.app["hub"].push_scene(cubes=cubes, polylines=polylines)
+    point_clouds = [
+        PointCloud(
+            points=[tuple(p) for p in pc["points"]],
+            color=int(pc.get("color", 0x00FF88)),
+            size=float(pc.get("size", 0.04)),
+            frame=str(pc.get("frame", "world")),
+        )
+        for pc in raw_clouds
+    ]
+    sent = await request.app["hub"].push_scene(
+        cubes=cubes, polylines=polylines, point_clouds=point_clouds,
+    )
     return web.json_response({
         "ok": True, "sent_to": sent,
         "n_cubes": len(cubes), "n_polylines": len(polylines),
+        "n_point_clouds": len(point_clouds),
     })
 
 
