@@ -45,8 +45,18 @@
 
     // ---------- three.js ----------
     const scene     = new THREE.Scene();
-    const sceneRoot = new THREE.Group();    // wireframe cubes live here
-    scene.add(sceneRoot);
+    // Two roots:
+    //   worldRoot — items already in WebXR local-floor frame (frame="world")
+    //   headRoot  — items in three.js camera-local frame (frame="camera").
+    //               Its matrix is set once per scene message to the *current*
+    //               XR camera pose, freezing those items where the headset was
+    //               at scene-receive time. Subsequent head motion does not move
+    //               them, so silhouettes stay world-locked.
+    const worldRoot = new THREE.Group();
+    const headRoot  = new THREE.Group();
+    headRoot.matrixAutoUpdate = false;
+    scene.add(worldRoot);
+    scene.add(headRoot);
 
     const camera   = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.01, 100);
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -65,16 +75,29 @@
 
     // ---------- WS: receive scene, rebuild wireframes ----------
     function clearScene() {
-      while (sceneRoot.children.length) {
-        const obj = sceneRoot.children.pop();
-        obj.geometry?.dispose?.();
-        obj.material?.dispose?.();
+      for (const g of [worldRoot, headRoot]) {
+        while (g.children.length) {
+          const obj = g.children.pop();
+          obj.geometry?.dispose?.();
+          obj.material?.dispose?.();
+        }
       }
+    }
+
+    function rootFor(frame) {
+      return frame === 'camera' ? headRoot : worldRoot;
     }
 
     function applyScene(msg) {
       if (msg?.type !== 'scene') return;
       clearScene();
+
+      // Snapshot the live XR camera pose so frame=="camera" items get pinned to
+      // where the headset was at this moment. Without an active XR session the
+      // matrix stays identity, which is the correct fallback (camera == world).
+      const xrCam = renderer.xr.getCamera();
+      headRoot.matrix.copy(xrCam.matrixWorld);
+
       const cubes = msg.cubes || [];
       for (const c of cubes) {
         const [sx, sy, sz] = c.size;
@@ -86,9 +109,55 @@
         lines.position.set(c.center[0], c.center[1], c.center[2]);
         const [qx, qy, qz, qw] = c.quat;
         lines.quaternion.set(qx, qy, qz, qw);
-        sceneRoot.add(lines);
+        rootFor(c.frame).add(lines);
       }
-      countEl.textContent = `${cubes.length} cubes`;
+
+      const polylines = msg.polylines || [];
+      for (const pl of polylines) {
+        const pts = pl.points || [];
+        if (pts.length < 2) continue;
+
+        // Outline: closed loop or open line.
+        const flat = new Float32Array(pts.length * 3);
+        for (let i = 0; i < pts.length; i++) {
+          flat[3*i] = pts[i][0]; flat[3*i+1] = pts[i][1]; flat[3*i+2] = pts[i][2];
+        }
+        const geom = new THREE.BufferGeometry();
+        geom.setAttribute('position', new THREE.BufferAttribute(flat, 3));
+        const lineMat = new THREE.LineBasicMaterial({ color: pl.color ?? 0x00ff88 });
+        const lineObj = pl.closed ? new THREE.LineLoop(geom, lineMat)
+                                  : new THREE.Line(geom, lineMat);
+        rootFor(pl.frame).add(lineObj);
+
+        // Fill: triangle fan from centroid. Approximate but cheap; non-convex
+        // silhouettes (arms out, gap between legs) will over-fill across gaps.
+        if (pl.fill_color != null && pts.length >= 3) {
+          let cx = 0, cy = 0, cz = 0;
+          for (const p of pts) { cx += p[0]; cy += p[1]; cz += p[2]; }
+          cx /= pts.length; cy /= pts.length; cz /= pts.length;
+
+          const tri = new Float32Array(pts.length * 9);
+          for (let i = 0; i < pts.length; i++) {
+            const j = (i + 1) % pts.length;
+            const o = i * 9;
+            tri[o] = cx;       tri[o+1] = cy;       tri[o+2] = cz;
+            tri[o+3] = pts[i][0]; tri[o+4] = pts[i][1]; tri[o+5] = pts[i][2];
+            tri[o+6] = pts[j][0]; tri[o+7] = pts[j][1]; tri[o+8] = pts[j][2];
+          }
+          const fillGeom = new THREE.BufferGeometry();
+          fillGeom.setAttribute('position', new THREE.BufferAttribute(tri, 3));
+          const fillMat = new THREE.MeshBasicMaterial({
+            color: pl.fill_color,
+            transparent: true,
+            opacity: 0.55,                  // bumped from 0.25 — needed against AR passthrough
+            side: THREE.DoubleSide,
+            depthWrite: false,
+          });
+          rootFor(pl.frame).add(new THREE.Mesh(fillGeom, fillMat));
+        }
+      }
+
+      countEl.textContent = `${cubes.length} cubes / ${polylines.length} silhouettes`;
     }
 
     let ws = null;
