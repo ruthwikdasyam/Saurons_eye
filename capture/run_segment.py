@@ -73,6 +73,15 @@ def parse_args() -> argparse.Namespace:
                         "camera-local frame; the renderer pins them using the live headset "
                         "pose at scene-receive time, so they stay world-locked when you turn "
                         "your head. Overrides --transform.")
+    p.add_argument("--pose-source", choices=["none", "drone"], default="none",
+                   help="none: use --transform/--camera-on-headset. "
+                        "drone: subscribe to MAVLink and build T_world_camera live.")
+    p.add_argument("--drone-port", default="/dev/ttyUSB0",
+                   help="MAVLink connection (with --pose-source drone). e.g. /dev/ttyUSB0, "
+                        "udpin:127.0.0.1:14551")
+    p.add_argument("--drone-baud", type=int, default=57600)
+    p.add_argument("--no-auto-zero", action="store_true",
+                   help="(--pose-source drone) don't zero on first pose; press 'z' manually.")
     return p.parse_args()
 
 
@@ -152,7 +161,19 @@ def main() -> None:
     print(f"depth_scale={depth_scale:.5f} m/unit  fx={intr.fx:.1f}  fy={intr.fy:.1f}  "
           f"cx={intr.ppx:.1f}  cy={intr.ppy:.1f}")
 
-    if args.camera_on_headset:
+    drone_pose = None
+    if args.pose_source == "drone":
+        from capture.drone_pose import DronePoseToWorld
+        drone_pose = DronePoseToWorld(
+            args.drone_port, baud=args.drone_baud,
+            auto_zero_on_first_pose=not args.no_auto_zero,
+        )
+        drone_pose.start()
+        T_world_camera = None                              # filled per-frame
+        polyline_frame = "world"
+        print(f"transform: drone MAVLink ({args.drone_port}). "
+              f"{'auto-zero on first pose' if not args.no_auto_zero else 'press z to zero'}.")
+    elif args.camera_on_headset:
         T_world_camera = camera_optical_to_local()        # axis swap only; Quest applies head pose
         polyline_frame = "camera"
         print("transform: camera-on-headset (axis swap; renderer applies live head pose)")
@@ -264,11 +285,19 @@ def main() -> None:
                 cv2.polylines(seg_only, [pts2d], isClosed=True,
                               color=(0, 255, 255), thickness=2, lineType=cv2.LINE_AA)
 
+            # Per-frame pose lookup (drone case overrides the static T set at startup).
+            T_this_frame: np.ndarray | None
+            if drone_pose is not None:
+                T_this_frame = drone_pose.T_world_camera()       # None until first pose + zero
+            else:
+                T_this_frame = T_world_camera
+
             # Push to headset (throttled).
             now = time.time()
-            if args.vr and silhouettes and (now - last_push_t) >= (1.0 / VR_PUSH_HZ):
+            if (args.vr and silhouettes and T_this_frame is not None
+                    and (now - last_push_t) >= (1.0 / VR_PUSH_HZ)):
                 polylines = silhouettes_to_polylines(
-                    silhouettes, T_world_camera, frame=polyline_frame,
+                    silhouettes, T_this_frame, frame=polyline_frame,
                 )
                 _post_scene_async(push_url, polylines=polylines)
                 last_push_t = now
@@ -279,12 +308,17 @@ def main() -> None:
             )
             cv2.putText(overlay, hud, (8, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
                         (0, 255, 255), 1, cv2.LINE_AA)
+            if drone_pose is not None:
+                cv2.putText(overlay, f"drone: {drone_pose.status()}", (8, 44),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1, cv2.LINE_AA)
 
             view = np.hstack((overlay, seg_only))
             cv2.imshow("segmented person  |  left: RGB+mask  |  right: person only  (q to quit)", view)
             key = cv2.waitKey(1) & 0xFF
             if key in (ord("q"), 27):
                 break
+            if key == ord("z") and drone_pose is not None:
+                drone_pose.zero()
     finally:
         pipeline.stop()
         cv2.destroyAllWindows()
