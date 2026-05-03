@@ -31,3 +31,6 @@ logs/
 
 #claude
 .claude/
+
+# headset viewer self-signed certs
+headset/certs/

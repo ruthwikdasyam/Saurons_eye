@@ -2,7 +2,7 @@
 Subprocess worker for voice capture. Records mic, transcribes, prints
 JSON to stdout. Status messages go to stderr.
 
-Run as a child of capture/voice.py. We isolate whisper into this process
+Run as a child of detections/voice.py. We isolate whisper into this process
 so the parent (which runs cv2.imshow + ultralytics) never imports
 torch/whisper directly — those imports break cv2's GUI runloop on Mac.
 

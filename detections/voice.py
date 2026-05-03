@@ -1,7 +1,7 @@
 """
 Voice -> text helper for the YOLO-World tracker.
 
-Spawns ``capture/_voice_worker.py`` as a fresh subprocess for each
+Spawns ``detections/_voice_worker.py`` as a fresh subprocess for each
 capture(). The worker records audio via sounddevice and transcribes via
 openai-whisper, then exits. We isolate whisper into a child process
 because importing torch/whisper into the same process as cv2.imshow on

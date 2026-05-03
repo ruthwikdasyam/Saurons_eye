@@ -348,7 +348,7 @@ def main():
 
     listener = None
     if args.voice:
-        from capture.voice import VoiceListener
+        from detections.voice import VoiceListener
         print(f"voice mode: whisper '{args.whisper_model}' (subprocess; first call downloads ~75 MB)")
         listener = VoiceListener(model_size=args.whisper_model, duration_s=args.voice_duration)
 
