@@ -54,7 +54,7 @@ from capture.realsense_ros import RealSenseRosCapture
 DEPTH_TRUNC = 6.0          # m. Drop depth past this before integration.
 VOXEL_SIZE = 0.05          # m. Occupancy voxel size — fine enough for walls/people.
 DEVICE = "CUDA:0"          # GPU if available, falls back to CPU automatically.
-CARVE_COLUMNS = False      # Off for static-scene scanning; cheaper add().
+CARVE_COLUMNS = True       # Re-enabled — safe now that RTAB-Map pose is drift-free.
 
 # Pipeline cadence
 PROCESS_EVERY = 1          # Process every Nth ROS-published frame.
