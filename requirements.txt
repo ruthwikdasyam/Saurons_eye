@@ -27,6 +27,12 @@ aiohttp>=3.9.0
 openai-whisper>=20231117
 sounddevice>=0.4.6
 
+# Drone telemetry (Pixhawk over SiK radio).
+# MAVProxy is optional — only needed on the GCS PC if QGC and Python both
+# need the link at the same time (MAVProxy routes to multiple UDP outs).
+pymavlink>=2.4.41
+pyserial>=3.5
+
 # Tests
 pytest>=8.0
 
