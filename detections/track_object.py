@@ -47,7 +47,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--object", help='single phrase, e.g. "red backpack". required unless --voice is set')
     p.add_argument("--source", default="webcam", help="webcam | realsense | path to image/video")
     p.add_argument("--model", default="yolov8s-worldv2.pt", help="YOLO-World weights (auto-downloaded)")
-    p.add_argument("--conf", type=float, default=0.05, help="open-vocab needs lower threshold than COCO YOLO")
+    p.add_argument("--conf", type=float, default=0.20, help="min detection confidence; open-vocab is noisy below ~0.15")
     p.add_argument("--device", default=None, help="cuda:0 | mps | cpu")
     p.add_argument("--json", dest="json_path", default=None, help="append per-frame records here")
     p.add_argument("--headless", action="store_true")
