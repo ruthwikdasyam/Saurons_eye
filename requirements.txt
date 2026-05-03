@@ -1,0 +1,6 @@
+fastcrc==0.3.5
+lxml==6.1.0
+pymavlink==2.4.49
+pyserial==3.5
+SpeechRecognition>=3.10.0
+pyaudio>=0.2.13
