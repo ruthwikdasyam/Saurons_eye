@@ -5,7 +5,7 @@ pyrealsense2>=2.55.1
 open3d>=0.18.0
 
 # Object detection (pulls in torch)
-# ultralytics>=8.3.0
+ultralytics>=8.3.0
 
 # General CV + ArUco markers
 opencv-contrib-python>=4.10.0
@@ -19,6 +19,13 @@ msgpack>=1.1.0
 
 # Headset viewer (HTTPS + WebSocket server for the Quest WebXR client)
 aiohttp>=3.9.0
+
+# Voice → object query (detections.track_object --voice).
+# openai-whisper (not faster-whisper): faster-whisper's CTranslate2 runtime
+# conflicts with the torch runtime ultralytics loads, silently aborting the
+# process. openai-whisper shares torch with ultralytics.
+openai-whisper>=20231117
+sounddevice>=0.4.6
 
 # Tests
 pytest>=8.0
