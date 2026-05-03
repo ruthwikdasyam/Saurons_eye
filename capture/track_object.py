@@ -1,0 +1,298 @@
+"""Open-vocabulary object tracker.
+
+Type a single phrase ("red backpack", "rifle", "person", "doorknob") and the
+camera will only surface that object. For every frame, instances are sorted
+by confidence (desc) and reported with:
+    - 4 corners of the 2D bbox (TL, TR, BR, BL) in pixels
+    - 2D center
+    - confidence
+    - 3D center + 3D bbox corners (RealSense source only)
+
+Sources:
+    --source webcam        OpenCV VideoCapture (default)
+    --source realsense     D435i with aligned depth -> adds 3D coords
+    --source path/to.mp4   video file
+    --source path/to.jpg   single image
+
+Output:
+    Always prints to stdout.
+    --json out.json        also append per-frame records to a JSON list file.
+
+Examples:
+    python track_object.py --object "person"
+    python track_object.py --object "red backpack" --source realsense --json log.json
+    python track_object.py --object "laptop" --source webcam --conf 0.1
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
+
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser()
+    p.add_argument("--object", required=True, help='single phrase, e.g. "red backpack"')
+    p.add_argument("--source", default="webcam", help="webcam | realsense | path to image/video")
+    p.add_argument("--model", default="yolov8s-worldv2.pt", help="YOLO-World weights (auto-downloaded)")
+    p.add_argument("--conf", type=float, default=0.05, help="open-vocab needs lower threshold than COCO YOLO")
+    p.add_argument("--device", default=None, help="cuda:0 | mps | cpu")
+    p.add_argument("--json", dest="json_path", default=None, help="append per-frame records here")
+    p.add_argument("--headless", action="store_true")
+    p.add_argument("--max-frames", type=int, default=0)
+    return p.parse_args()
+
+
+def load_world_model(model_path: str, query: str, device: str | None):
+    from ultralytics import YOLOWorld
+
+    model = YOLOWorld(model_path)
+    model.set_classes([query])
+    if device:
+        model.to(device)
+    return model
+
+
+def corners_and_center(x1: float, y1: float, x2: float, y2: float):
+    corners = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]  # TL, TR, BR, BL
+    center = [(x1 + x2) / 2.0, (y1 + y2) / 2.0]
+    return corners, center
+
+
+def project_3d(
+    x1: float, y1: float, x2: float, y2: float,
+    depth: np.ndarray, K: np.ndarray, depth_scale: float,
+    depth_min: float = 0.2, depth_max: float = 8.0,
+) -> dict | None:
+    h, w = depth.shape[:2]
+    fx, fy = K[0, 0], K[1, 1]
+    cx, cy = K[0, 2], K[1, 2]
+    x1i = max(0, int(np.floor(x1)));  y1i = max(0, int(np.floor(y1)))
+    x2i = min(w, int(np.ceil(x2)));   y2i = min(h, int(np.ceil(y2)))
+    if x2i <= x1i or y2i <= y1i:
+        return None
+    patch = depth[y1i:y2i, x1i:x2i].astype(np.float32) * depth_scale
+    valid = (patch >= depth_min) & (patch <= depth_max) & np.isfinite(patch)
+    if not np.any(valid):
+        return None
+
+    zs = patch[valid]
+    lo, hi = np.percentile(zs, [10, 90])
+    ys, xs = np.where(valid)
+    zs_full = patch[ys, xs]
+    band = (zs_full >= lo) & (zs_full <= hi)
+    if np.any(band):
+        ys, xs, zs_full = ys[band], xs[band], zs_full[band]
+    us = xs + x1i
+    vs = ys + y1i
+    X = (us - cx) * zs_full / fx
+    Y = (vs - cy) * zs_full / fy
+    Z = zs_full
+
+    cx2d = (x1 + x2) / 2.0
+    cy2d = (y1 + y2) / 2.0
+    z_center = float(np.median(Z))
+    X_center = (cx2d - cx) * z_center / fx
+    Y_center = (cy2d - cy) * z_center / fy
+
+    return {
+        "center_3d": [X_center, Y_center, z_center],
+        "bbox3d": [
+            [float(X.min()), float(Y.min()), float(Z.min())],
+            [float(X.max()), float(Y.max()), float(Z.max())],
+        ],
+    }
+
+
+def boxes_from_result(r) -> list[tuple[float, tuple[float, float, float, float]]]:
+    if r.boxes is None or len(r.boxes) == 0:
+        return []
+    xyxy = r.boxes.xyxy.cpu().numpy()
+    confs = r.boxes.conf.cpu().numpy()
+    pairs = [(float(c), (float(b[0]), float(b[1]), float(b[2]), float(b[3])))
+             for b, c in zip(xyxy, confs)]
+    pairs.sort(key=lambda p: p[0], reverse=True)
+    return pairs
+
+
+def emit_frame(
+    frame_idx: int,
+    query: str,
+    pairs,
+    depth_ctx: tuple[np.ndarray, np.ndarray, float] | None,
+    json_records: list | None,
+) -> dict:
+    t = time.time()
+    rec_dets = []
+    for rank, (conf, (x1, y1, x2, y2)) in enumerate(pairs, start=1):
+        corners, center = corners_and_center(x1, y1, x2, y2)
+        det = {
+            "rank": rank,
+            "conf": round(conf, 4),
+            "corners_2d": [[round(v, 1) for v in c] for c in corners],
+            "center_2d": [round(v, 1) for v in center],
+        }
+        if depth_ctx is not None:
+            depth, K, scale = depth_ctx
+            d3 = project_3d(x1, y1, x2, y2, depth, K, scale)
+            if d3 is not None:
+                det["center_3d"] = [round(v, 3) for v in d3["center_3d"]]
+                det["bbox3d"] = [[round(v, 3) for v in p] for p in d3["bbox3d"]]
+        rec_dets.append(det)
+
+    record = {"t": round(t, 3), "frame": frame_idx, "query": query, "n": len(rec_dets), "detections": rec_dets}
+
+    print(f"[{frame_idx:05d}] '{query}' n={len(rec_dets)}")
+    for d in rec_dets:
+        line = f"  #{d['rank']} conf={d['conf']:.3f}  center={d['center_2d']}  corners={d['corners_2d']}"
+        if "center_3d" in d:
+            line += f"  center3d={d['center_3d']} (m)"
+        print(line)
+
+    if json_records is not None:
+        json_records.append(record)
+    return record
+
+
+def draw(rgb: np.ndarray, query: str, pairs) -> np.ndarray:
+    import cv2
+    img = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    for rank, (conf, (x1, y1, x2, y2)) in enumerate(pairs, start=1):
+        x1i, y1i, x2i, y2i = (int(v) for v in (x1, y1, x2, y2))
+        cx, cy = int((x1 + x2) / 2), int((y1 + y2) / 2)
+        cv2.rectangle(img, (x1i, y1i), (x2i, y2i), (0, 0, 255), 2)
+        cv2.circle(img, (cx, cy), 4, (0, 255, 255), -1)
+        label = f"#{rank} {query} {conf:.2f}"
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+        cv2.rectangle(img, (x1i, y1i - th - 6), (x1i + tw + 4, y1i), (0, 0, 255), -1)
+        cv2.putText(img, label, (x1i + 2, y1i - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+    return img
+
+
+def run_video(model, query: str, source, args, json_records):
+    import cv2
+    cap = cv2.VideoCapture(source)
+    if not cap.isOpened():
+        sys.exit(f"could not open: {source}")
+    n = 0
+    try:
+        while True:
+            ok, bgr = cap.read()
+            if not ok:
+                break
+            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+            results = model.predict(rgb, conf=args.conf, device=args.device, verbose=False)
+            pairs = boxes_from_result(results[0]) if results else []
+            emit_frame(n, query, pairs, None, json_records)
+            if not args.headless:
+                cv2.imshow(f"track: {query}", draw(rgb, query, pairs))
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    break
+            n += 1
+            if args.max_frames and n >= args.max_frames:
+                break
+    finally:
+        cap.release()
+        if not args.headless:
+            cv2.destroyAllWindows()
+
+
+def run_image(model, query: str, path: str, args, json_records):
+    import cv2
+    bgr = cv2.imread(path)
+    if bgr is None:
+        sys.exit(f"could not read: {path}")
+    rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+    results = model.predict(rgb, conf=args.conf, device=args.device, verbose=False)
+    pairs = boxes_from_result(results[0]) if results else []
+    emit_frame(0, query, pairs, None, json_records)
+    if not args.headless:
+        cv2.imshow(f"track: {query}", draw(rgb, query, pairs))
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
+
+
+def run_realsense(model, query: str, args, json_records):
+    try:
+        import pyrealsense2 as rs
+    except ImportError:
+        sys.exit("pyrealsense2 not installed (Linux-only on our reqs).")
+    import cv2
+
+    pipeline = rs.pipeline()
+    config = rs.config()
+    config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+    config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
+    profile = pipeline.start(config)
+    depth_scale = profile.get_device().first_depth_sensor().get_depth_scale()
+    intr = profile.get_stream(rs.stream.color).as_video_stream_profile().get_intrinsics()
+    K = np.array([[intr.fx, 0, intr.ppx], [0, intr.fy, intr.ppy], [0, 0, 1]], dtype=np.float64)
+    align = rs.align(rs.stream.color)
+
+    n = 0
+    try:
+        while True:
+            frames = align.process(pipeline.wait_for_frames())
+            color_frame = frames.get_color_frame()
+            depth_frame = frames.get_depth_frame()
+            if not color_frame or not depth_frame:
+                continue
+            bgr = np.asarray(color_frame.get_data())
+            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+            depth_raw = np.asarray(depth_frame.get_data())
+            results = model.predict(rgb, conf=args.conf, device=args.device, verbose=False)
+            pairs = boxes_from_result(results[0]) if results else []
+            emit_frame(n, query, pairs, (depth_raw, K, depth_scale), json_records)
+            if not args.headless:
+                cv2.imshow(f"track: {query}", draw(rgb, query, pairs))
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    break
+            n += 1
+            if args.max_frames and n >= args.max_frames:
+                break
+    finally:
+        pipeline.stop()
+        if not args.headless:
+            cv2.destroyAllWindows()
+
+
+def main():
+    args = parse_args()
+    query = args.object.strip()
+    if not query:
+        sys.exit("--object cannot be empty")
+
+    print(f"loading {args.model} for query: '{query}'")
+    model = load_world_model(args.model, query, args.device)
+
+    json_records: list | None = [] if args.json_path else None
+
+    src = args.source
+    try:
+        if src == "webcam":
+            run_video(model, query, 0, args, json_records)
+        elif src == "realsense":
+            run_realsense(model, query, args, json_records)
+        elif os.path.isfile(src):
+            ext = Path(src).suffix.lower()
+            if ext in {".jpg", ".jpeg", ".png", ".bmp", ".webp"}:
+                run_image(model, query, src, args, json_records)
+            else:
+                run_video(model, query, src, args, json_records)
+        else:
+            sys.exit(f"unknown source: {src}")
+    finally:
+        if json_records is not None:
+            with open(args.json_path, "w") as f:
+                json.dump(json_records, f, indent=2)
+            print(f"wrote {len(json_records)} frame records to {args.json_path}")
+
+
+if __name__ == "__main__":
+    main()
