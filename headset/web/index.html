@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sauron's Eye — Headset Viewer</title>
+  <style>
+    body { margin: 0; background: #0d1117; color: #e6edf3;
+           font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+           overflow: hidden; }
+    #ui { position: absolute; inset: 0; display: flex; flex-direction: column;
+          align-items: center; justify-content: center; gap: 14px; z-index: 100; }
+    h1 { font-size: 28px; margin: 0 0 6px; }
+    #status { font-size: 16px; color: #8b949e; }
+    #count  { font-size: 14px; color: #8b949e; }
+    button { padding: 16px 36px; font-size: 18px; font-weight: 600;
+             color: #fff; background: #238636; border: none; border-radius: 10px;
+             cursor: pointer; }
+    button:disabled { background: #444; cursor: not-allowed; }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <div id="ui">
+    <h1>Sauron's Eye — Headset Viewer</h1>
+    <div id="status">Initialising…</div>
+    <div id="count"></div>
+    <button id="enterBtn" disabled>Enter AR</button>
+  </div>
+
+  <script type="importmap">
+  { "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+  }}
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+
+    const statusEl = document.getElementById('status');
+    const countEl  = document.getElementById('count');
+    const enterBtn = document.getElementById('enterBtn');
+    const ui       = document.getElementById('ui');
+    const setStatus = (m) => { statusEl.textContent = m; };
+
+    // ---------- three.js ----------
+    const scene     = new THREE.Scene();
+    const sceneRoot = new THREE.Group();    // wireframe cubes live here
+    scene.add(sceneRoot);
+
+    const camera   = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.01, 100);
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setPixelRatio(devicePixelRatio);
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.setClearColor(0x000000, 0);     // transparent so AR passthrough shows through
+    renderer.xr.enabled = true;
+    renderer.xr.setReferenceSpaceType('local-floor');
+    document.body.appendChild(renderer.domElement);
+
+    addEventListener('resize', () => {
+      camera.aspect = innerWidth / innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(innerWidth, innerHeight);
+    });
+
+    // ---------- WS: receive scene, rebuild wireframes ----------
+    function clearScene() {
+      while (sceneRoot.children.length) {
+        const obj = sceneRoot.children.pop();
+        obj.geometry?.dispose?.();
+        obj.material?.dispose?.();
+      }
+    }
+
+    function applyScene(msg) {
+      if (msg?.type !== 'scene') return;
+      clearScene();
+      const cubes = msg.cubes || [];
+      for (const c of cubes) {
+        const [sx, sy, sz] = c.size;
+        const box   = new THREE.BoxGeometry(sx, sy, sz);
+        const edges = new THREE.EdgesGeometry(box);
+        box.dispose();
+        const mat   = new THREE.LineBasicMaterial({ color: c.color ?? 0x00ff88 });
+        const lines = new THREE.LineSegments(edges, mat);
+        lines.position.set(c.center[0], c.center[1], c.center[2]);
+        const [qx, qy, qz, qw] = c.quat;
+        lines.quaternion.set(qx, qy, qz, qw);
+        sceneRoot.add(lines);
+      }
+      countEl.textContent = `${cubes.length} cubes`;
+    }
+
+    let ws = null;
+    function connectWS() {
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(`${proto}//${location.host}/ws`);
+      ws.onopen    = () => setStatus('Connected. Tap Enter AR.');
+      ws.onmessage = (e) => {
+        try { applyScene(JSON.parse(e.data)); }
+        catch (err) { console.error('bad scene message', err); }
+      };
+      ws.onclose = () => { setStatus('Disconnected — retrying…'); setTimeout(connectWS, 1000); };
+      ws.onerror = () => setStatus('WebSocket error');
+    }
+    connectWS();
+
+    // ---------- WebXR session ----------
+    async function enterAR() {
+      if (!navigator.xr) { setStatus('WebXR not available'); return; }
+      let session;
+      try {
+        session = await navigator.xr.requestSession('immersive-ar', {
+          requiredFeatures: ['local-floor'],
+        });
+      } catch {
+        session = await navigator.xr.requestSession('immersive-vr', {
+          requiredFeatures: ['local-floor'],
+        });
+      }
+      await renderer.xr.setSession(session);
+      ui.classList.add('hidden');
+      session.addEventListener('end', () => ui.classList.remove('hidden'));
+    }
+    enterBtn.addEventListener('click', () => {
+      enterAR().catch((e) => setStatus('AR failed: ' + e.message));
+    });
+
+    (async () => {
+      if (!navigator.xr) { setStatus('No WebXR — open this page in the Quest browser'); return; }
+      const ar = await navigator.xr.isSessionSupported('immersive-ar').catch(() => false);
+      const vr = await navigator.xr.isSessionSupported('immersive-vr').catch(() => false);
+      if (!ar && !vr) { setStatus('AR/VR not supported on this device'); return; }
+      setStatus(ar ? 'AR ready' : 'VR ready (no passthrough)');
+      enterBtn.disabled = false;
+    })();
+
+    // ---------- render loop ----------
+    renderer.setAnimationLoop(() => renderer.render(scene, camera));
+  </script>
+</body>
+</html>
