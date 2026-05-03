@@ -1,4 +1,4 @@
-# RealSense capture
+# RealSense capture (direct librealsense; ROS path uses ros-humble-realsense2-camera)
 pyrealsense2>=2.55.1
 
 # SLAM / fusion / point clouds
@@ -20,12 +20,9 @@ msgpack>=1.1.0
 # Headset viewer (HTTPS + WebSocket server for the Quest WebXR client)
 aiohttp>=3.9.0
 
-# Visualizer
-rerun-sdk==0.23.1
-
-# Colormap LUTs (turbo, viridis, plasma) for height-coloured voxel viz.
-# Matplotlib is already pulled in by Open3D, but we depend on it directly.
-matplotlib>=3.5
-
 # Tests
 pytest>=8.0
+
+# Visualisation lives in rtabmap_viz / rviz (ROS apt packages).
+# The Python side (capture.run_rtabmap) is a data subscriber for
+# downstream consumers — wire protocol, agentic layer, etc.

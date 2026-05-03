@@ -16,13 +16,19 @@ from __future__ import annotations
 
 import threading
 import time
+from dataclasses import dataclass
 from queue import Empty, Queue
 from typing import Any, Iterator
 
 import numpy as np
 import open3d as o3d
 
-from capture.realsense import Frame
+
+@dataclass
+class Frame:
+    color_rgb: np.ndarray   # H x W x 3, uint8
+    depth_raw: np.ndarray   # H x W, uint16 (multiply by depth_scale for metres)
+    t: float                # capture timestamp (seconds since epoch)
 
 
 def image_msg_to_np(msg: Any) -> np.ndarray:
