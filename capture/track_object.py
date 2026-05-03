@@ -22,6 +22,12 @@ Examples:
     python track_object.py --object "person"
     python track_object.py --object "red backpack" --source realsense --json log.json
     python track_object.py --object "laptop" --source webcam --conf 0.1
+
+    # Voice mode: speak the object name at startup; press 'v' in the viewer
+    # window mid-stream to re-record and swap the query live.
+    python track_object.py --voice
+    python track_object.py --voice --source webcam --blur-others
+    python track_object.py --voice --object "person" --source realsense   # 'person' is the initial query; 'v' swaps it
 """
 
 from __future__ import annotations
@@ -38,7 +44,7 @@ import numpy as np
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
-    p.add_argument("--object", required=True, help='single phrase, e.g. "red backpack"')
+    p.add_argument("--object", help='single phrase, e.g. "red backpack". required unless --voice is set')
     p.add_argument("--source", default="webcam", help="webcam | realsense | path to image/video")
     p.add_argument("--model", default="yolov8s-worldv2.pt", help="YOLO-World weights (auto-downloaded)")
     p.add_argument("--conf", type=float, default=0.05, help="open-vocab needs lower threshold than COCO YOLO")
@@ -51,6 +57,14 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="blur everything outside the detected bbox(es); when no match, blur the whole frame",
     )
+    p.add_argument(
+        "--voice",
+        action="store_true",
+        help="speak the object name. Initial prompt at startup, then press 'v' "
+             "in the viewer window to re-record and swap the query live.",
+    )
+    p.add_argument("--voice-duration", type=float, default=3.0, help="seconds to record per utterance")
+    p.add_argument("--whisper-model", default="tiny.en", help="faster-whisper model size: tiny.en | base.en | small.en | …")
     return p.parse_args()
 
 
@@ -199,25 +213,63 @@ def draw(rgb: np.ndarray, query: str, pairs, blur_others: bool = False) -> np.nd
     return img
 
 
-def run_video(model, query: str, source, args, json_records):
+def _maybe_voice_swap(key: int, model, listener, current_query: str) -> str:
+    """If 'v' was pressed and a listener exists, record + swap the YOLO-World query.
+
+    Returns the (possibly updated) query. Empty Whisper output keeps the old query.
+    """
+    if listener is None or key != ord("v"):
+        return current_query
+    new_q = listener.capture()
+    if not new_q:
+        return current_query
+    model.set_classes([new_q])
+    print(f"query updated: {current_query!r} -> {new_q!r}")
+    return new_q
+
+
+def run_video(model, query: str, source, args, json_records, listener=None):
+    import time
     import cv2
     cap = cv2.VideoCapture(source)
     if not cap.isOpened():
         sys.exit(f"could not open: {source}")
+    print(f"[cv2] camera opened (source={source}); waiting for first frame...")
     n = 0
+    # AVFoundation on Mac reports isOpened()=True immediately but the first
+    # ~10-30 reads return False while the sensor physically warms up. Retry
+    # silently for ~3 s before giving up.
+    warmup_left = 30
     try:
         while True:
             ok, bgr = cap.read()
             if not ok:
+                if warmup_left > 0:
+                    warmup_left -= 1
+                    time.sleep(0.1)
+                    continue
+                if n == 0:
+                    print(
+                        "camera opened but no frames received in 3 s.\n"
+                        "  - on Mac: System Settings → Privacy & Security → Camera, "
+                        "ensure Terminal/iTerm is allowed; restart the terminal.\n"
+                        "  - close any other app currently using the camera "
+                        "(Zoom, Photo Booth, browser tabs).",
+                        file=sys.stderr,
+                    )
                 break
+            if n == 0:
+                print(f"[cv2] first frame received, shape={bgr.shape}")
             rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
             results = model.predict(rgb, conf=args.conf, device=args.device, verbose=False)
             pairs = boxes_from_result(results[0]) if results else []
             emit_frame(n, query, pairs, None, json_records)
             if not args.headless:
                 cv2.imshow(f"track: {query}", draw(rgb, query, pairs, blur_others=args.blur_others))
-                if cv2.waitKey(1) & 0xFF == ord("q"):
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord("q"):
                     break
+                query = _maybe_voice_swap(key, model, listener, query)
             n += 1
             if args.max_frames and n >= args.max_frames:
                 break
@@ -242,7 +294,7 @@ def run_image(model, query: str, path: str, args, json_records):
         cv2.destroyAllWindows()
 
 
-def run_realsense(model, query: str, args, json_records):
+def run_realsense(model, query: str, args, json_records, listener=None):
     try:
         import pyrealsense2 as rs
     except ImportError:
@@ -275,8 +327,10 @@ def run_realsense(model, query: str, args, json_records):
             emit_frame(n, query, pairs, (depth_raw, K, depth_scale), json_records)
             if not args.headless:
                 cv2.imshow(f"track: {query}", draw(rgb, query, pairs, blur_others=args.blur_others))
-                if cv2.waitKey(1) & 0xFF == ord("q"):
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord("q"):
                     break
+                query = _maybe_voice_swap(key, model, listener, query)
             n += 1
             if args.max_frames and n >= args.max_frames:
                 break
@@ -288,9 +342,28 @@ def run_realsense(model, query: str, args, json_records):
 
 def main():
     args = parse_args()
-    query = args.object.strip()
-    if not query:
-        sys.exit("--object cannot be empty")
+
+    if not args.object and not args.voice:
+        sys.exit("specify --object \"...\" or --voice (or both)")
+
+    listener = None
+    if args.voice:
+        from capture.voice import VoiceListener
+        print(f"voice mode: whisper '{args.whisper_model}' (subprocess; first call downloads ~75 MB)")
+        listener = VoiceListener(model_size=args.whisper_model, duration_s=args.voice_duration)
+
+    if args.object:
+        query = args.object.strip()
+        if not query:
+            sys.exit("--object cannot be empty")
+    else:
+        # --voice without --object: prompt for the initial query before the YOLO model loads.
+        assert listener is not None
+        query = ""
+        while not query:
+            query = listener.capture()
+            if not query:
+                print("didn't catch that — try again (Ctrl-C to abort).")
 
     print(f"loading {args.model} for query: '{query}'")
     model = load_world_model(args.model, query, args.device)
@@ -300,15 +373,15 @@ def main():
     src = args.source
     try:
         if src == "webcam":
-            run_video(model, query, 0, args, json_records)
+            run_video(model, query, 0, args, json_records, listener=listener)
         elif src == "realsense":
-            run_realsense(model, query, args, json_records)
+            run_realsense(model, query, args, json_records, listener=listener)
         elif os.path.isfile(src):
             ext = Path(src).suffix.lower()
             if ext in {".jpg", ".jpeg", ".png", ".bmp", ".webp"}:
                 run_image(model, query, src, args, json_records)
             else:
-                run_video(model, query, src, args, json_records)
+                run_video(model, query, src, args, json_records, listener=listener)
         else:
             sys.exit(f"unknown source: {src}")
     finally:
