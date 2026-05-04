@@ -296,24 +296,19 @@ def main() -> None:
             else:
                 T_this_frame = T_world_camera
 
-            # Push to headset (throttled). Polylines = flat outline (clean
-            # boundary cue, no fan-fill artifacts). Point cloud = real per-pixel
-            # depth, gives the silhouette actual 3D shape from any viewing angle.
+            # Push to headset (throttled). Polylines = boundary outline + clean
+            # earcut-triangulated translucent fill. The 3D point-cloud overlay
+            # was dropped — visually too busy on top of the fill. PointCloud
+            # payload remains in the wire format for future use.
             now = time.time()
-            if (args.vr and T_this_frame is not None
+            if (args.vr and T_this_frame is not None and silhouettes
                     and (now - last_push_t) >= (1.0 / VR_PUSH_HZ)):
                 polylines = silhouettes_to_polylines(
                     silhouettes, T_this_frame,
                     frame=polyline_frame,               # default fill_color → renderer earcut-fills
-                ) if silhouettes else []
-                point_clouds = point_cloud_to_payload(
-                    pts_vox, T_this_frame, frame=polyline_frame,
-                ) if n_pts > 0 else []
-                if polylines or point_clouds:
-                    _post_scene_async(
-                        push_url, polylines=polylines, point_clouds=point_clouds,
-                    )
-                    last_push_t = now
+                )
+                _post_scene_async(push_url, polylines=polylines)
+                last_push_t = now
 
             hud = (
                 f"seg={t_seg:5.1f}ms proj={t_proj:5.1f}ms sil={t_sil:4.1f}ms cap={t_capture:4.1f}ms  "

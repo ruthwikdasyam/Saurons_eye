@@ -96,7 +96,7 @@
     //   5. project each polygon vertex to (u, v) in this basis
     //   6. THREE.ShapeGeometry triangulates the 2D polygon (earcut)
     //   7. lift each output vertex back: P = centroid + u·v1 + v·v2
-    function planarFillMesh(pts, colorInt, opacity = 0.5) {
+    function planarFillMesh(pts, colorInt, opacity = 0.8) {
       if (pts.length < 3) return null;
       let cx = 0, cy = 0, cz = 0;
       for (const p of pts) { cx += p[0]; cy += p[1]; cz += p[2]; }
